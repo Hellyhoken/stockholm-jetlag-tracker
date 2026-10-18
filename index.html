@@ -31,6 +31,7 @@
   .head-btn:hover { background:#1d2e48; }
   #layout { height:calc(100dvh - 68px); min-height:0; display:grid; grid-template-columns:380px minmax(0,1fr); }
   #sidebar { min-width:0; min-height:0; overflow:auto; padding:16px; background:#f7f9fc; border-right:1px solid #dfe6ef; overscroll-behavior:contain; }
+  .sidebar-drag-handle { display:none; }
   #map-wrap { position:relative; min-width:0; min-height:0; background:#e9eef3; }
   #map { height:100%; width:100%; z-index:1; }
   .panel { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); margin-bottom:12px; overflow:hidden; box-shadow:0 2px 7px rgba(16,27,45,.035); }
@@ -128,9 +129,14 @@
     .live-pill { padding:6px 8px; font-size:10px; }
     .live-pill .live-dot { width:6px; height:6px; }
     .head-btn { padding:7px 8px; font-size:10px; }
-    #layout { height:calc(100dvh - 61px); grid-template-columns:minmax(0,1fr); grid-template-rows:minmax(220px,42dvh) minmax(0,1fr); }
+    #layout { height:calc(100dvh - 61px); grid-template-columns:minmax(0,1fr); grid-template-rows:minmax(0,var(--map-height,42dvh)) minmax(30px,1fr); }
     #map-wrap { grid-row:1; }
-    #sidebar { grid-row:2; border-right:0; border-top:1px solid #dfe6ef; padding:10px 10px calc(12px + env(safe-area-inset-bottom)); }
+    #sidebar { grid-row:2; border-right:0; border-top:1px solid #dfe6ef; padding:0 10px calc(12px + env(safe-area-inset-bottom)); }
+    .sidebar-drag-handle { position:sticky; top:0; z-index:2; display:flex; height:30px; align-items:center; justify-content:center; background:#f7f9fc; border-bottom:1px solid #dfe6ef; touch-action:none; user-select:none; cursor:ns-resize; }
+    .sidebar-drag-handle::before { content:""; width:42px; height:4px; border-radius:99px; background:#bcc8d6; }
+    #sidebar.dragging { overflow:hidden; }
+    #sidebar.dragging .sidebar-drag-handle::before { background:#71839b; }
+    #sidebar > .panel:first-of-type { margin-top:0; }
     .panel { margin-bottom:9px; }
     .panel-head { padding:11px 12px 8px; }
     .panel-body { padding:0 12px 12px; }
@@ -165,7 +171,8 @@
 </header>
 <div id="layout">
   <aside id="sidebar" aria-label="Zone filter controls">
-    <section class="panel">
+  <div class="sidebar-drag-handle" id="sidebar-drag-handle" role="separator" aria-label="Resize map and menu" aria-orientation="horizontal" title="Swipe up or down to resize the map"></div>
+  <section class="panel">
       <div class="panel-head">
         <div class="head-left"><span class="step">01</span><div><h2 class="panel-title">Station network</h2><p class="panel-hint">Load mapped rail stops across the Stockholm region.</p></div></div>
       </div>
@@ -1025,6 +1032,35 @@
   $('clear-rules').addEventListener('click',()=>{
     if(!rules.length) return;
     pushUndo(); rules=[]; suppressDraft=false; renderRulesList(); renderAll(); setNotice('All rules cleared. You can undo this change.', 'ok', 3500);
+  });
+  const layout=$('layout'), sidebarHandle=$('sidebar-drag-handle');
+  let resizeStartY=0, resizeStartHeight=0, resizing=false;
+  function mobileLayoutActive() {
+    return window.matchMedia('(max-width:760px)').matches;
+  }
+  function setMobileMapHeight(height) {
+    const layoutHeight=layout.getBoundingClientRect().height;
+    const minHeight=0, maxHeight=Math.max(minHeight, layoutHeight-30);
+    const nextHeight=Math.max(minHeight, Math.min(maxHeight, height));
+    layout.style.setProperty('--map-height', `${nextHeight}px`);
+    map.invalidateSize({pan:false});
+  }
+  sidebarHandle.addEventListener('pointerdown', ev=>{
+    if(!mobileLayoutActive()) return;
+    resizing=true; resizeStartY=ev.clientY; resizeStartHeight=$('map-wrap').getBoundingClientRect().height;
+    sidebarHandle.setPointerCapture(ev.pointerId); $('sidebar').classList.add('dragging');
+  });
+  sidebarHandle.addEventListener('pointermove', ev=>{
+    if(!resizing) return;
+    setMobileMapHeight(resizeStartHeight + ev.clientY - resizeStartY);
+  });
+  sidebarHandle.addEventListener('pointerup', ev=>{
+    if(!resizing) return;
+    resizing=false; sidebarHandle.releasePointerCapture(ev.pointerId); $('sidebar').classList.remove('dragging');
+  });
+  sidebarHandle.addEventListener('pointercancel', ev=>{
+    if(!resizing) return;
+    resizing=false; sidebarHandle.releasePointerCapture(ev.pointerId); $('sidebar').classList.remove('dragging');
   });
   ['show-metro','show-rail','show-tram'].forEach(id=>$(id).addEventListener('change',renderAll));
   const draftFieldIds=['radius-effect','radius-target','radius-lat','radius-lon','radius-km','radius-label','split-keep','split1-lat','split1-lon','split2-lat','split2-lon','split-label','area-effect'];
