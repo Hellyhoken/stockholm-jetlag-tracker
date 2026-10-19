@@ -95,6 +95,9 @@
   .rule-meta { color:#7a8798; font-size:9px; margin-top:3px; line-height:1.35; }
   .rule-tag { display:inline-block; padding:2px 5px; border-radius:5px; text-transform:uppercase; letter-spacing:.04em; font-size:8px; font-weight:850; margin-right:4px; vertical-align:1px; }
   .rule-tag.exclude { background:#fff0f0; color:#bd4148; } .rule-tag.include { background:#e8f8f2; color:#137e67; }
+  .manual-exclusions { border:1px solid #e7ecf2; border-radius:10px; background:#f8fafc; overflow:hidden; }
+  .manual-exclusions summary { padding:10px; color:#435168; font-size:11px; font-weight:700; cursor:pointer; user-select:none; }
+  .manual-exclusion-list { display:flex; flex-direction:column; gap:6px; padding:0 7px 7px; }
   .remove-rule { border:0; border-radius:6px; background:transparent; color:#96a2b1; padding:3px 5px; font-size:16px; line-height:1; }
   .remove-rule:hover { background:#fff0f0; color:#b73740; }
   .empty-rules { padding:16px 10px 20px; text-align:center; color:#8390a1; font-size:11px; line-height:1.5; }
@@ -109,6 +112,7 @@
   .map-buttons { position:absolute; z-index:500; right:12px; top:12px; display:flex; flex-direction:column; gap:7px; }
   .map-fab { border:1px solid #d6e0eb; border-radius:10px; background:rgba(255,255,255,.95); color:#34465e; box-shadow:0 2px 8px rgba(19,33,55,.1); padding:9px 11px; font-size:11px; font-weight:700; }
   .map-fab:hover { background:#fff; }
+  .map-fab.active { color:#fff; background:#2870d5; border-color:#2870d5; }
   .map-notice { position:absolute; z-index:500; bottom:75px; right:12px; max-width:270px; display:none; padding:10px 12px; border-radius:10px; font-size:11px; line-height:1.4; box-shadow:0 3px 12px rgba(19,33,55,.13); border:1px solid #f0d7ac; background:#fff8ec; color:#845813; }
   .map-notice.visible { display:block; }
   .leaflet-popup-content { margin:11px 13px; min-width:160px; }
@@ -247,6 +251,7 @@
           <div class="soft-note" id="area-selection-note">Select a result to preview its boundary, then add the rule.</div>
         </div>
         <div class="rule-actions"><button class="button primary" id="add-rule" type="button">＋ Add zone rule</button><button class="button" id="cancel-draft" type="button">Reset draft</button></div>
+        <button class="button full" id="toggle-station-edit" type="button" aria-pressed="false" style="margin-top:12px">✎ Change stations</button>
       </div>
     </section>
 
@@ -288,6 +293,7 @@
   const NOMINATIM_ENDPOINT = 'https://nominatim.openstreetmap.org/search';
   const STATION_CACHE_KEY = 'stockholm-transit-zone-stations-v2';
   const STATION_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+  const MANUAL_EXCLUSIONS_KEY = 'stockholm-transit-zone-manual-exclusions-v1';
   // Add station names or OSM element IDs here when OSM tags incorrectly
   // classify a station as commuter rail. The rail mode is removed only;
   // metro/tram modes remain available when they are also mapped.
@@ -323,9 +329,11 @@
 
   let stations = [];
   let rules = [];
+  let manualExclusions = new Set();
   let undoStack = [];
   let activeTool = 'radius';
   let placingTarget = null;
+  let stationEditMode = false;
   let selectedBoundary = null;
   let suppressDraft = false;
   let areaCandidates = [];
@@ -355,6 +363,50 @@
     node.classList.add('visible');
     if (noticeTimer) clearTimeout(noticeTimer);
     if (duration > 0) noticeTimer = setTimeout(() => node.classList.remove('visible'), duration);
+  }
+  function stationIsManuallyExcluded(station) {
+    return station.osmIds.some(id => manualExclusions.has(id));
+  }
+  function persistManualExclusions() {
+    try {
+      localStorage.setItem(MANUAL_EXCLUSIONS_KEY, JSON.stringify([...manualExclusions]));
+      return null;
+    } catch (err) {
+      console.warn('Manual station exclusions could not be saved:', err);
+      return err && err.message ? err.message : 'storage is unavailable';
+    }
+  }
+  function loadManualExclusions() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(MANUAL_EXCLUSIONS_KEY) || '[]');
+      if (!Array.isArray(saved) || saved.some(id => typeof id !== 'string' || !/^(node|way|relation)\/\d+$/.test(id))) {
+        throw new Error('Saved manual station exclusions have an invalid format.');
+      }
+      manualExclusions = new Set(saved);
+    } catch (err) {
+      manualExclusions = new Set();
+      console.warn('Manual station exclusions could not be loaded:', err);
+      setNotice('Saved manual station exclusions could not be loaded: ' + (err.message || 'invalid data'), 'warn', 0);
+    }
+  }
+  function changeManualExclusion(station, ruleIncluded) {
+    const isManuallyExcluded = stationIsManuallyExcluded(station);
+    if (!isManuallyExcluded && !ruleIncluded) {
+      setNotice(`${station.name} is excluded by a zone rule and cannot be manually retained.`, 'info', 5000);
+      return;
+    }
+    pushUndo();
+    for (const id of station.osmIds) {
+      if (isManuallyExcluded) manualExclusions.delete(id);
+      else manualExclusions.add(id);
+    }
+    const saveError = persistManualExclusions();
+    renderRulesList();
+    renderAll();
+    const action = isManuallyExcluded ? 'Manual exclusion cleared for' : 'Manually excluded';
+    setNotice(saveError
+      ? `${action} ${station.name}, but the change could not be saved locally: ${saveError}`
+      : `${action} ${station.name}.`, saveError ? 'warn' : 'ok', saveError ? 0 : 3500);
   }
   function setStatus(message, loading=false) {
     $('station-status').textContent = message;
@@ -496,6 +548,7 @@
       stations = cached;
       setStatus(`${stations.length} mapped rail stops loaded from local cache.`);
       if (fitAfter) fitNetwork();
+      renderRulesList();
       renderAll();
       setNotice(`Loaded ${stations.length} cached station features. Refresh to check OpenStreetMap for updates.`, 'info', 5000);
       $('reload-stations').disabled = false;
@@ -510,6 +563,7 @@
       if (stations.length) {
         setStatus(`${stations.length} mapped rail stops loaded from OpenStreetMap.`);
         if (fitAfter) fitNetwork();
+        renderRulesList();
         renderAll();
         setNotice(`Loaded ${stations.length} station features. Use the filters to inspect metro, rail, and light rail/tram.`, 'ok', 5000);
       } else {
@@ -885,7 +939,7 @@
       }
     }
   }
-  function addStationMarker(station, included) {
+  function addStationMarker(station, included, manuallyExcluded, ruleIncluded) {
     const fill=included?'#2870d5':'#d84e54';
     const marker=L.circleMarker([station.lat,station.lon],{
       pane:'stationPane',radius:included?5:5.5,color:'#ffffff',weight:1.4,fillColor:fill,fillOpacity:.97,opacity:1
@@ -894,10 +948,16 @@
     const popup=document.createElement('div');
     const name=document.createElement('div'); name.className='popup-name'; name.textContent=station.name;
     const modes=document.createElement('div'); modes.className='popup-modes'; modes.textContent=modeNames;
-    const status=document.createElement('div'); status.className='popup-status'; status.style.color=included?'#1769bd':'#be3e45'; status.textContent=included?'Currently retained':'Currently excluded';
+    const status=document.createElement('div'); status.className='popup-status'; status.style.color=included?'#1769bd':'#be3e45'; status.textContent=included?'Currently retained':manuallyExcluded?'Manually excluded':'Currently excluded by a zone rule';
     const coords=document.createElement('div'); coords.className='popup-coord'; coords.textContent=`${station.lat.toFixed(5)}, ${station.lon.toFixed(5)}`;
     popup.append(name,modes,status,coords);
     marker.bindPopup(popup,{autoPan:true,closeButton:true});
+    marker.on('click',ev=>{
+      if(!stationEditMode) return;
+      if(ev.originalEvent) L.DomEvent.stopPropagation(ev.originalEvent);
+      marker.closePopup();
+      changeManualExclusion(station,ruleIncluded);
+    });
     marker.addTo(stationLayer);
   }
   function renderAll() {
@@ -911,9 +971,11 @@
     for(const station of stations) {
       if(!stationIsVisible(station,visibility)) continue;
       total++;
-      const included=stationIncluded(station,activeRules);
+      const manuallyExcluded=stationIsManuallyExcluded(station);
+      const ruleIncluded=stationIncluded(station,activeRules);
+      const included=ruleIncluded && !manuallyExcluded;
       if(included) kept++; else excluded++;
-      addStationMarker(station,included);
+      addStationMarker(station,included,manuallyExcluded,ruleIncluded);
     }
     $('count-total').textContent=stations.length ? String(total) : '—';
     $('count-kept').textContent=stations.length ? String(kept) : '—';
@@ -940,12 +1002,29 @@
     return 'Zone rule';
   }
   function formatKm(m) { const km=m/1000; return `${Number.isInteger(km)?km.toFixed(0):km.toFixed(1)} km`; }
+  function clearManualExclusion(ids, stationName) {
+    pushUndo();
+    for(const id of ids) manualExclusions.delete(id);
+    const saveError=persistManualExclusions();
+    renderRulesList(); renderAll();
+    setNotice(saveError
+      ? `Cleared manual exclusion for ${stationName}, but could not save it locally: ${saveError}`
+      : `Cleared manual exclusion for ${stationName}.`,
+      saveError?'warn':'ok',saveError?0:3000);
+  }
   function renderRulesList() {
-    const holder=$('rules-list'); holder.innerHTML='';
-    $('rules-count').textContent=String(rules.length);
+    const holder=$('rules-list');
+    const previousManualGroup=holder.querySelector('.manual-exclusions');
+    holder.innerHTML='';
+    const manuallyExcludedStations=stations.filter(stationIsManuallyExcluded);
+    const matchedManualIds=new Set(manuallyExcludedStations.flatMap(station=>station.osmIds));
+    const unmatchedManualIds=[...manualExclusions].filter(id=>!matchedManualIds.has(id));
+    const manualGroupOpen=previousManualGroup ? previousManualGroup.open : false;
+    const manualEntryCount=manuallyExcludedStations.length+unmatchedManualIds.length;
+    $('rules-count').textContent=String(rules.length+manualEntryCount);
     $('undo-button').disabled=undoStack.length===0;
-    $('clear-rules').disabled=rules.length===0;
-    if(!rules.length) {
+    $('clear-rules').disabled=rules.length===0 && manualExclusions.size===0;
+    if(!rules.length && !manualEntryCount) {
       const empty=document.createElement('div'); empty.className='empty-rules';
       const icon=document.createElement('span'); icon.className='empty-icon'; icon.textContent='◎';
       empty.append(icon,document.createTextNode('No rules yet. Add a radius, split line, or mapped area to start filtering stations.'));
@@ -964,9 +1043,34 @@
       remove.addEventListener('click',()=>{pushUndo(); rules.splice(index,1); suppressDraft=false; renderRulesList(); renderAll();});
       card.append(number,copy,remove); holder.appendChild(card);
     });
+    if(manualEntryCount) {
+      const group=document.createElement('details'); group.className='manual-exclusions'; group.open=manualGroupOpen;
+      const summary=document.createElement('summary'); summary.textContent=`Manual exclusions (${manualEntryCount})`;
+      const list=document.createElement('div'); list.className='manual-exclusion-list';
+      group.append(summary,list);
+      const addManualCard=(nameText,metaText,ids,removeLabel,removeTitle,stationName=nameText)=>{
+        const card=document.createElement('div'); card.className='rule-card';
+        const copy=document.createElement('div'); copy.className='rule-copy';
+        const name=document.createElement('div'); name.className='rule-name';
+        const tag=document.createElement('span'); tag.className='rule-tag exclude'; tag.textContent='manual';
+        name.append(tag,document.createTextNode(nameText));
+        const meta=document.createElement('div'); meta.className='rule-meta'; meta.textContent=metaText;
+        copy.append(name,meta);
+        const remove=document.createElement('button'); remove.type='button'; remove.className='remove-rule'; remove.setAttribute('aria-label',removeLabel); remove.title=removeTitle; remove.textContent='×';
+        remove.addEventListener('click',()=>clearManualExclusion(ids,stationName));
+        card.append(copy,remove); list.appendChild(card);
+      };
+      manuallyExcludedStations.forEach(station=>{
+        addManualCard(station.name,'Manually excluded station',station.osmIds,`Restore ${station.name}`,'Clear manual exclusion');
+      });
+      unmatchedManualIds.forEach(id=>{
+        addManualCard('Station not found in loaded OpenStreetMap data',id,[id],`Remove manual exclusion ${id}`,'Remove manual exclusion',id);
+      });
+      holder.appendChild(group);
+    }
   }
   function pushUndo() {
-    undoStack.push(clone(rules));
+    undoStack.push({rules:clone(rules),manualExclusions:[...manualExclusions]});
     if(undoStack.length>60) undoStack.shift();
     $('undo-button').disabled=undoStack.length===0;
   }
@@ -1004,6 +1108,7 @@
     stopPicking(); renderAll();
   }
   function startPicking(target) {
+    setStationEditMode(false);
     suppressDraft=false;
     placingTarget=target;
     $('pick-banner').classList.add('visible');
@@ -1014,7 +1119,22 @@
   }
   function stopPicking() {
     placingTarget=null; $('pick-banner').classList.remove('visible'); $('cancel-pick').hidden=true;
-    map.getContainer().style.cursor=''; $('map-notice').classList.remove('visible');
+    map.getContainer().style.cursor=stationEditMode?'pointer':''; $('map-notice').classList.remove('visible');
+  }
+  function setStationEditMode(enabled) {
+    stationEditMode=enabled;
+    const button=$('toggle-station-edit');
+    button.classList.toggle('active',enabled);
+    button.setAttribute('aria-pressed',enabled?'true':'false');
+    button.textContent=enabled?'Stop changing stations':'✎ Change stations';
+    if(enabled) {
+      stopPicking();
+      map.getContainer().style.cursor='pointer';
+      setNotice('Click a retained station to exclude it. Click a manually excluded station to clear that exclusion. Zone-excluded stations cannot be retained here.', 'info', 0);
+    } else {
+      map.getContainer().style.cursor=placingTarget?'crosshair':'';
+      if(!placingTarget) $('map-notice').classList.remove('visible');
+    }
   }
   map.on('click',ev=>{
     if(!placingTarget) return;
@@ -1027,6 +1147,7 @@
   document.querySelectorAll('[data-tool]').forEach(btn=>btn.addEventListener('click',()=>setTool(btn.dataset.tool)));
   document.querySelectorAll('[data-pick]').forEach(btn=>btn.addEventListener('click',()=>startPicking(btn.dataset.pick)));
   $('cancel-pick').addEventListener('click',stopPicking);
+  $('toggle-station-edit').addEventListener('click',()=>setStationEditMode(!stationEditMode));
   $('reload-stations').addEventListener('click',()=>loadStations(true, true));
   $('fit-map').addEventListener('click',fitNetwork);
   $('add-rule').addEventListener('click',addCurrentRule);
@@ -1035,12 +1156,23 @@
   $('area-name').addEventListener('keydown',ev=>{if(ev.key==='Enter'){ev.preventDefault();searchAreas();}});
   $('undo-button').addEventListener('click',()=>{
     if(!undoStack.length) return;
-    rules=undoStack.pop(); suppressDraft=false; renderRulesList(); renderAll();
-    setNotice('Undid the most recent rule change.', 'ok', 3000);
+    const previous=undoStack.pop();
+    rules=previous.rules; manualExclusions=new Set(previous.manualExclusions); suppressDraft=false;
+    const saveError=persistManualExclusions();
+    renderRulesList(); renderAll();
+    setNotice(saveError
+      ? `Undid the most recent change, but manual station exclusions could not be saved locally: ${saveError}`
+      : 'Undid the most recent change.', saveError?'warn':'ok', saveError?0:3000);
   });
   $('clear-rules').addEventListener('click',()=>{
-    if(!rules.length) return;
-    pushUndo(); rules=[]; suppressDraft=false; renderRulesList(); renderAll(); setNotice('All rules cleared. You can undo this change.', 'ok', 3500);
+    if(!rules.length && !manualExclusions.size) return;
+    pushUndo(); rules=[]; manualExclusions.clear(); suppressDraft=false;
+    const saveError=persistManualExclusions();
+    renderRulesList(); renderAll();
+    setNotice(saveError
+      ? `All rules and manual exclusions cleared, but station exclusions could not be saved locally: ${saveError}`
+      : 'All rules and manual exclusions cleared. You can undo this change.',
+      saveError?'warn':'ok',saveError?0:3500);
   });
   const layout=$('layout'), sidebarHandle=$('sidebar-drag-handle');
   let resizeStartY=0, resizeStartHeight=0, resizing=false;
@@ -1081,7 +1213,8 @@
     const data={
       app:'Stockholm Transit Zone Filter', version:1, exportedAt:new Date().toISOString(),
       note:'Station data is loaded live from OpenStreetMap on next open. Boundary geometries used by area rules are included.',
-      mapExtent:{south:SOUTH,west:WEST,north:NORTH,east:EAST}, rules
+      mapExtent:{south:SOUTH,west:WEST,north:NORTH,east:EAST}, rules,
+      manualExclusions:[...manualExclusions]
     };
     const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
     const url=URL.createObjectURL(blob); const a=document.createElement('a');
@@ -1095,21 +1228,30 @@
     try {
       const parsed=JSON.parse(await file.text());
       const imported=Array.isArray(parsed) ? parsed : parsed.rules;
+      const importedManualExclusions=Array.isArray(parsed) || parsed.manualExclusions===undefined ? [] : parsed.manualExclusions;
       if(!Array.isArray(imported)) throw new Error('This file does not contain a rules array.');
+      if(!Array.isArray(importedManualExclusions) || importedManualExclusions.some(id=>typeof id!=='string' || !/^(node|way|relation)\/\d+$/.test(id))) {
+        throw new Error('Manual station exclusions have invalid data.');
+      }
       const valid=imported.filter(r=>r && ['radius','split','area'].includes(r.type) &&
         (r.type==='radius' ? isValidCoord(r.center) && Number.isFinite(r.radiusM) && r.radiusM>0 :
          r.type==='split' ? isValidCoord(r.p1) && isValidCoord(r.p2) && [1,2].includes(Number(r.keep)) :
          r.type==='area' ? r.geometry && Array.isArray(r.geometry.outers) && r.geometry.outers.length>0 : false));
       if(valid.length!==imported.length) throw new Error('One or more rules have invalid data or missing area geometry.');
-      pushUndo(); rules=clone(valid); suppressDraft=true; renderRulesList(); renderAll();
-      setNotice(`Imported ${rules.length} rule${rules.length===1?'':'s'}.`, 'ok', 4000);
+      pushUndo(); rules=clone(valid); manualExclusions=new Set(importedManualExclusions); suppressDraft=true; setStationEditMode(false);
+      const saveError=persistManualExclusions();
+      renderRulesList(); renderAll();
+      setNotice(saveError
+        ? `Imported ${rules.length} rule${rules.length===1?'':'s'} and station choices, but could not save station choices locally: ${saveError}`
+        : `Imported ${rules.length} rule${rules.length===1?'':'s'} and manual station exclusions.`,
+        saveError?'warn':'ok',saveError?0:4000);
     } catch(err) { setNotice('Could not import rules: ' + (err.message || 'invalid JSON'), 'warn', 8000); }
     ev.target.value='';
   });
 
   map.on('moveend zoomend',()=>renderAll());
   window.addEventListener('resize',()=>{map.invalidateSize({pan:false}); renderAll();});
-  renderRulesList(); renderAll();
+  loadManualExclusions(); renderRulesList(); renderAll();
   // Load data immediately; the map remains usable even if Overpass is temporarily unavailable.
   loadStations(true);
 })();
