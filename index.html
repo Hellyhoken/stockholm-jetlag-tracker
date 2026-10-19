@@ -306,6 +306,15 @@
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 20, attribution: OSM_ATTRIBUTION, subdomains: 'abc'
   }).addTo(map);
+  const railwayLayer = L.tileLayer('https://{s}.tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openrailwaymap.org/" target="_blank" rel="noopener">OpenRailwayMap</a> · ' + OSM_ATTRIBUTION,
+    subdomains: 'abc',
+    opacity: 0.8
+  });
+  L.control.layers(null, {'OpenRailwayMap rail lines': railwayLayer}, {
+    collapsed: true, position: 'bottomright'
+  }).addTo(map);
   map.createPane('zonePane'); map.getPane('zonePane').style.zIndex = 350;
   map.createPane('stationPane'); map.getPane('stationPane').style.zIndex = 480;
   const zoneLayer = L.layerGroup().addTo(map);
