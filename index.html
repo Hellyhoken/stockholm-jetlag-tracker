@@ -261,7 +261,7 @@
         <button class="button small" id="undo-button" type="button" disabled>↶ Undo</button>
       </div>
       <div id="rules-list" class="rules-list"><div class="empty-rules"><span class="empty-icon">◎</span>No rules yet. Add a radius, split line, or mapped area to start filtering stations.</div></div>
-      <div class="rule-footer"><button class="button" id="clear-rules" type="button" disabled>Clear all</button><button class="button" id="export-json" type="button">Export rules JSON</button></div>
+      <div class="rule-footer"><button class="button" id="clear-rules" type="button" disabled>Clear all</button><button class="button" id="export-json" type="button">Export rules JSON</button><button class="button" id="import-json" type="button">Import rules</button></div>
       <div class="attribution-note">Map tiles and queried features © OpenStreetMap contributors · ODbL</div>
     </section>
     <input id="import-file" class="visually-hidden" type="file" accept=".json,application/json">
@@ -269,7 +269,7 @@
   <main id="map-wrap" aria-label="Station exclusion map">
     <div id="map"></div>
     <div class="map-status"><span class="status-swatch" id="map-status-swatch"></span><span id="map-status-text">Loading OpenStreetMap features…</span></div>
-    <div class="map-buttons"><button class="map-fab" id="fit-map" type="button">⌖ Fit network</button><button class="map-fab" id="cancel-pick" type="button" hidden>Cancel point pick</button><button class="map-fab" id="import-json" type="button">Import rules</button></div>
+    <div class="map-buttons"><button class="map-fab" id="fit-map" type="button">⌖ Fit network</button><button class="map-fab" id="cancel-pick" type="button" hidden>Cancel point pick</button></div>
     <div id="map-notice" class="map-notice" role="status"></div>
     <div class="map-legend">
       <span class="legend-item"><i class="legend-dot" style="background:#2870d5"></i>Retained station</span>
@@ -293,6 +293,7 @@
   const NOMINATIM_ENDPOINT = 'https://nominatim.openstreetmap.org/search';
   const STATION_CACHE_KEY = 'stockholm-transit-zone-stations-v2';
   const STATION_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+  const ZONE_RULES_KEY = 'stockholm-transit-zone-rules-v1';
   const MANUAL_EXCLUSIONS_KEY = 'stockholm-transit-zone-manual-exclusions-v1';
   // Add station names or OSM element IDs here when OSM tags incorrectly
   // classify a station as commuter rail. The rail mode is removed only;
@@ -366,6 +367,36 @@
   }
   function stationIsManuallyExcluded(station) {
     return station.osmIds.some(id => manualExclusions.has(id));
+  }
+  function validateRules(value) {
+    if(!Array.isArray(value)) throw new Error('This file does not contain a rules array.');
+    const valid=value.filter(r=>r && ['radius','split','area'].includes(r.type) &&
+      (r.type==='radius' ? isValidCoord(r.center) && Number.isFinite(r.radiusM) && r.radiusM>0 :
+       r.type==='split' ? isValidCoord(r.p1) && isValidCoord(r.p2) && [1,2].includes(Number(r.keep)) :
+       r.type==='area' ? r.geometry && Array.isArray(r.geometry.outers) && r.geometry.outers.length>0 : false));
+    if(valid.length!==value.length) throw new Error('One or more rules have invalid data or missing area geometry.');
+    return valid;
+  }
+  function persistZoneRules() {
+    try {
+      localStorage.setItem(ZONE_RULES_KEY,JSON.stringify(rules));
+      return null;
+    } catch(err) {
+      console.warn('Zone rules could not be saved:',err);
+      return err && err.message ? err.message : 'storage is unavailable';
+    }
+  }
+  function loadZoneRules() {
+    try {
+      const saved=JSON.parse(localStorage.getItem(ZONE_RULES_KEY)||'[]');
+      rules=clone(validateRules(saved));
+      suppressDraft=rules.length>0;
+    } catch(err) {
+      rules=[];
+      suppressDraft=false;
+      console.warn('Saved zone rules could not be loaded:',err);
+      setNotice('Saved zone rules could not be loaded: ' + (err.message || 'invalid data'),'warn',0);
+    }
   }
   function persistManualExclusions() {
     try {
@@ -1040,7 +1071,14 @@
       const meta=document.createElement('div'); meta.className='rule-meta'; meta.textContent=summaryForRule(rule);
       copy.append(name,meta);
       const remove=document.createElement('button'); remove.type='button'; remove.className='remove-rule'; remove.setAttribute('aria-label',`Remove rule ${index+1}`); remove.title='Remove rule'; remove.textContent='×';
-      remove.addEventListener('click',()=>{pushUndo(); rules.splice(index,1); suppressDraft=false; renderRulesList(); renderAll();});
+      remove.addEventListener('click',()=>{
+        pushUndo(); rules.splice(index,1); suppressDraft=false;
+        const saveError=persistZoneRules();
+        renderRulesList(); renderAll();
+        setNotice(saveError
+          ? `Removed zone rule, but could not save rules locally: ${saveError}`
+          : 'Removed zone rule.',saveError?'warn':'ok',saveError?0:3000);
+      });
       card.append(number,copy,remove); holder.appendChild(card);
     });
     if(manualEntryCount) {
@@ -1084,8 +1122,12 @@
     if(!rule) { setNotice('Complete the coordinates and values before adding this rule.', 'warn', 4500); return; }
     pushUndo(); delete rule.draft;
     rules.push(clone(rule)); suppressDraft=true;
+    const saveError=persistZoneRules();
     renderRulesList(); renderAll();
-    setNotice(`Added rule ${rules.length}: ${summaryForRule(rule)}.`, 'ok', 4200);
+    setNotice(saveError
+      ? `Added rule ${rules.length}, but could not save rules locally: ${saveError}`
+      : `Added rule ${rules.length}: ${summaryForRule(rule)}.`,
+      saveError?'warn':'ok',saveError?0:4200);
     // Keep the chosen method, but clear optional label and area selection so the next rule is deliberate.
     if(activeTool==='radius') $('radius-label').value='';
     if(activeTool==='split') $('split-label').value='';
@@ -1158,21 +1200,25 @@
     if(!undoStack.length) return;
     const previous=undoStack.pop();
     rules=previous.rules; manualExclusions=new Set(previous.manualExclusions); suppressDraft=false;
-    const saveError=persistManualExclusions();
+    const zoneSaveError=persistZoneRules();
+    const manualSaveError=persistManualExclusions();
     renderRulesList(); renderAll();
-    setNotice(saveError
-      ? `Undid the most recent change, but manual station exclusions could not be saved locally: ${saveError}`
-      : 'Undid the most recent change.', saveError?'warn':'ok', saveError?0:3000);
+    const saveErrors=[zoneSaveError && `zone rules: ${zoneSaveError}`,manualSaveError && `manual exclusions: ${manualSaveError}`].filter(Boolean);
+    setNotice(saveErrors.length
+      ? `Undid the most recent change, but could not save ${saveErrors.join('; ')}.`
+      : 'Undid the most recent change.',saveErrors.length?'warn':'ok',saveErrors.length?0:3000);
   });
   $('clear-rules').addEventListener('click',()=>{
     if(!rules.length && !manualExclusions.size) return;
     pushUndo(); rules=[]; manualExclusions.clear(); suppressDraft=false;
-    const saveError=persistManualExclusions();
+    const zoneSaveError=persistZoneRules();
+    const manualSaveError=persistManualExclusions();
     renderRulesList(); renderAll();
-    setNotice(saveError
-      ? `All rules and manual exclusions cleared, but station exclusions could not be saved locally: ${saveError}`
+    const saveErrors=[zoneSaveError && `zone rules: ${zoneSaveError}`,manualSaveError && `manual exclusions: ${manualSaveError}`].filter(Boolean);
+    setNotice(saveErrors.length
+      ? `All rules and manual exclusions cleared, but could not save ${saveErrors.join('; ')}.`
       : 'All rules and manual exclusions cleared. You can undo this change.',
-      saveError?'warn':'ok',saveError?0:3500);
+      saveErrors.length?'warn':'ok',saveErrors.length?0:3500);
   });
   const layout=$('layout'), sidebarHandle=$('sidebar-drag-handle');
   let resizeStartY=0, resizeStartHeight=0, resizing=false;
@@ -1229,29 +1275,26 @@
       const parsed=JSON.parse(await file.text());
       const imported=Array.isArray(parsed) ? parsed : parsed.rules;
       const importedManualExclusions=Array.isArray(parsed) || parsed.manualExclusions===undefined ? [] : parsed.manualExclusions;
-      if(!Array.isArray(imported)) throw new Error('This file does not contain a rules array.');
+      const valid=validateRules(imported);
       if(!Array.isArray(importedManualExclusions) || importedManualExclusions.some(id=>typeof id!=='string' || !/^(node|way|relation)\/\d+$/.test(id))) {
         throw new Error('Manual station exclusions have invalid data.');
       }
-      const valid=imported.filter(r=>r && ['radius','split','area'].includes(r.type) &&
-        (r.type==='radius' ? isValidCoord(r.center) && Number.isFinite(r.radiusM) && r.radiusM>0 :
-         r.type==='split' ? isValidCoord(r.p1) && isValidCoord(r.p2) && [1,2].includes(Number(r.keep)) :
-         r.type==='area' ? r.geometry && Array.isArray(r.geometry.outers) && r.geometry.outers.length>0 : false));
-      if(valid.length!==imported.length) throw new Error('One or more rules have invalid data or missing area geometry.');
       pushUndo(); rules=clone(valid); manualExclusions=new Set(importedManualExclusions); suppressDraft=true; setStationEditMode(false);
-      const saveError=persistManualExclusions();
+      const zoneSaveError=persistZoneRules();
+      const manualSaveError=persistManualExclusions();
       renderRulesList(); renderAll();
-      setNotice(saveError
-        ? `Imported ${rules.length} rule${rules.length===1?'':'s'} and station choices, but could not save station choices locally: ${saveError}`
+      const saveErrors=[zoneSaveError && `zone rules: ${zoneSaveError}`,manualSaveError && `manual exclusions: ${manualSaveError}`].filter(Boolean);
+      setNotice(saveErrors.length
+        ? `Imported ${rules.length} rule${rules.length===1?'':'s'} and station choices, but could not save ${saveErrors.join('; ')}.`
         : `Imported ${rules.length} rule${rules.length===1?'':'s'} and manual station exclusions.`,
-        saveError?'warn':'ok',saveError?0:4000);
+        saveErrors.length?'warn':'ok',saveErrors.length?0:4000);
     } catch(err) { setNotice('Could not import rules: ' + (err.message || 'invalid JSON'), 'warn', 8000); }
     ev.target.value='';
   });
 
   map.on('moveend zoomend',()=>renderAll());
   window.addEventListener('resize',()=>{map.invalidateSize({pan:false}); renderAll();});
-  loadManualExclusions(); renderRulesList(); renderAll();
+  loadZoneRules(); loadManualExclusions(); renderRulesList(); renderAll();
   // Load data immediately; the map remains usable even if Overpass is temporarily unavailable.
   loadStations(true);
 })();
