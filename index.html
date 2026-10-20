@@ -129,6 +129,10 @@
   .popup-modes { margin-top:5px; color:#65758b; font-size:11px; }
   .popup-status { margin-top:8px; font-size:11px; font-weight:750; }
   .popup-coord { margin-top:4px; color:#7b8797; font-size:10px; }
+  .position-coord-row { display:flex; align-items:center; gap:6px; margin-top:5px; }
+  .position-coord-input { min-width:0; width:160px; padding:5px 6px; border:1px solid #d9e2ed; border-radius:5px; color:#526177; font:11px ui-monospace,SFMono-Regular,Consolas,monospace; }
+  .position-coord-copy { padding:5px 7px; border:1px solid #d9e2ed; border-radius:5px; background:#f8fafc; color:#34465e; font-size:10px; cursor:pointer; }
+  .position-coord-copy:hover { background:#eef3f8; }
   .point-label { background:none; border:0; }
   .point-label span { display:grid; place-items:center; width:25px; height:25px; border:2px solid white; border-radius:50%; background:#263f63; color:white; box-shadow:0 1px 5px #0006; font-size:11px; font-weight:900; }
   .attribution-note { color:#8b97a7; font-size:9px; text-align:center; padding:2px 8px 10px; }
@@ -408,7 +412,7 @@
       }).addTo(locationLayer);
       L.circleMarker(currentPosition, {
         pane:'locationPane', radius:8, color:'#fff', weight:3, fillColor:'#8b68d8', fillOpacity:1
-      }).bindPopup('Your current position').addTo(locationLayer);
+      }).bindPopup(`<div class="popup-name">Your current position</div><div class="position-coord-row"><input class="position-coord-input" type="text" value="${latitude.toFixed(6)}, ${longitude.toFixed(6)}" readonly aria-label="Current position coordinates" data-position-coordinates><button class="position-coord-copy" type="button" data-copy-position-coordinates>Copy</button></div>`).addTo(locationLayer);
       map.setView(currentPosition, Math.max(map.getZoom(), 15));
       const message = targetPrefix === 'radius'
         ? 'Current position set as the radius centre.'
@@ -1323,7 +1327,31 @@
   });
 
   document.querySelectorAll('[data-tool]').forEach(btn=>btn.addEventListener('click',()=>setTool(btn.dataset.tool)));
+  async function copyPositionCoordinates(button) {
+    const input=button.closest('.leaflet-popup-content').querySelector('[data-position-coordinates]');
+    input.focus(); input.select();
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('Clipboard API unavailable');
+      await navigator.clipboard.writeText(input.value);
+      setNotice('Position coordinates copied.', 'ok', 3000);
+    } catch {
+      try {
+        if (document.execCommand('copy')) {
+          setNotice('Position coordinates copied.', 'ok', 3000);
+          return;
+        }
+      } catch {
+        setNotice('Could not copy coordinates automatically. They are selected so you can copy them manually.');
+        return;
+      }
+      setNotice('Could not copy coordinates automatically. They are selected so you can copy them manually.');
+    }
+  }
   document.addEventListener('click',ev=>{
+    const copy=ev.target.closest('[data-copy-position-coordinates]');
+    if (copy) { copyPositionCoordinates(copy); return; }
+    const coordinates=ev.target.closest('[data-position-coordinates]');
+    if (coordinates) { coordinates.select(); return; }
     const pick=ev.target.closest('[data-pick]');
     if (pick) { startPicking(pick.dataset.pick); return; }
     const location=ev.target.closest('[data-location]');
