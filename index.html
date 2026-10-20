@@ -669,9 +669,14 @@
   function getProjected(latlon) {
     return map.options.crs.project(L.latLng(latlon.lat, latlon.lon));
   }
+  function splitPoints(rule) {
+    if (Array.isArray(rule.points)) return rule.points;
+    return [rule.p1,rule.p2];
+  }
   function splitValueAtPoint(point, rule) {
+    const points=splitPoints(rule);
     const P = getProjected(point);
-    return rule.points.reduce((closest,index,current) => {
+    return points.reduce((closest,current,index) => {
       const candidate=getProjected(current);
       const candidateDistance=(P.x-candidate.x)**2+(P.y-candidate.y)**2;
       return candidateDistance<closest.distance ? {index:index+1,distance:candidateDistance} : closest;
@@ -932,7 +937,8 @@
     points.push(points[0]); return points;
   }
   function clipPolygonHalfPlane(polygon, rule, keepNegative) {
-    const A=getProjected(rule.points[rule.keep-1]), B=getProjected(rule.points[rule._otherPoint]);
+    const points=splitPoints(rule);
+    const A=getProjected(points[rule.keep-1]), B=getProjected(points[rule._otherPoint]);
     const C=B.x*B.x+B.y*B.y-A.x*A.x-A.y*A.y;
     const projected=polygon.map(ll=>{const p=getProjected({lat:ll[0],lon:ll[1]});return {x:p.x,y:p.y};});
     const value=(p)=>2*p.x*(B.x-A.x)+2*p.y*(B.y-A.y)-C;
@@ -955,8 +961,9 @@
     return out;
   }
   function nearestPointRegion(polygon, rule) {
+    const points=splitPoints(rule);
     let region=polygon;
-    for (let index=0; index<rule.points.length; index++) {
+    for (let index=0; index<points.length; index++) {
       if (index === rule.keep-1) continue;
       region=clipPolygonHalfPlane(region,{...rule,_otherPoint:index},true);
       if (region.length<4) break;
@@ -990,24 +997,42 @@
       L.circleMarker([rule.center.lat,rule.center.lon],{radius:draft?6:4,color:'#fff',weight:2,fillColor:draft?'#69788e':(rule.effect==='include'?'#13866e':'#d84e54'),fillOpacity:1,pane:'stationPane'}).addTo(anchorLayer);
     } else if (rule.type==='split') {
       const outer=viewportRing(.12);
-      const retainedRegion=nearestPointRegion(outer,rule);
-      if(retainedRegion.length>=4) {
-        const shaded=rule.effect==='exclude' ? [retainedRegion] : [outer,retainedRegion];
-        L.polygon(shaded,{...style,fillRule:'evenodd',pane:'zonePane'}).addTo(zoneLayer);
-      }
-      for (let otherIndex=0; otherIndex<rule.points.length; otherIndex++) {
-        if (otherIndex===rule.keep-1) continue;
-        const Apx=map.project([rule.points[rule.keep-1].lat,rule.points[rule.keep-1].lon],map.getZoom());
-        const Bpx=map.project([rule.points[otherIndex].lat,rule.points[otherIndex].lon],map.getZoom());
+      const points=splitPoints(rule);
+      const selectedIndex=rule.keep-1;
+      const selected=points[selectedIndex];
+      if (points.length===2) {
+        const legacyRule={...rule,p1:points[0],p2:points[1],_otherPoint:rule.keep===1 ? 1 : 0};
+        const excludedSide=clipPolygonHalfPlane(outer,legacyRule,rule.effect==='exclude' ? rule.keep!==2 : rule.keep===2);
+        if(excludedSide.length>=4) L.polygon(excludedSide,{...style,pane:'zonePane'}).addTo(zoneLayer);
+        const Apx=map.project([points[0].lat,points[0].lon],map.getZoom()), Bpx=map.project([points[1].lat,points[1].lon],map.getZoom());
         const mx=(Apx.x+Bpx.x)/2, my=(Apx.y+Bpx.y)/2;
         const dx=-(Bpx.y-Apx.y), dy=(Bpx.x-Apx.x), mag=Math.hypot(dx,dy)||1;
         const scale=Math.max(map.getSize().x,map.getSize().y)*2;
         const pA=map.unproject(L.point(mx-dx/mag*scale,my-dy/mag*scale),map.getZoom());
         const pB=map.unproject(L.point(mx+dx/mag*scale,my+dy/mag*scale),map.getZoom());
         L.polyline([pA,pB],{color:draft?'#66778e':'#d84e54',weight:draft?2.5:2,dashArray:'7 6',opacity:.9,pane:'zonePane'}).addTo(zoneLayer);
+      } else {
+        const selectedRegion=nearestPointRegion(outer,rule);
+        if(selectedRegion.length>=4) {
+          const shaded=rule.effect==='exclude' ? [selectedRegion] : [outer,selectedRegion];
+          L.polygon(shaded,{...style,fillRule:'evenodd',pane:'zonePane'}).addTo(zoneLayer);
+        }
+        for (let otherIndex=0; otherIndex<points.length; otherIndex++) {
+          if (otherIndex===selectedIndex) continue;
+          const Apx=map.project([selected.lat,selected.lon],map.getZoom());
+          const Bpx=map.project([points[otherIndex].lat,points[otherIndex].lon],map.getZoom());
+          const mx=(Apx.x+Bpx.x)/2, my=(Apx.y+Bpx.y)/2;
+          const dx=-(Bpx.y-Apx.y), dy=(Bpx.x-Apx.x), mag=Math.hypot(dx,dy)||1;
+          const scale=Math.max(map.getSize().x,map.getSize().y)*2;
+          const pA=map.unproject(L.point(mx-dx/mag*scale,my-dy/mag*scale),map.getZoom());
+          const pB=map.unproject(L.point(mx+dx/mag*scale,my+dy/mag*scale),map.getZoom());
+          L.polyline([pA,pB],{color:draft?'#66778e':'#d84e54',weight:draft?2.5:2,dashArray:'7 6',opacity:.9,pane:'zonePane'}).addTo(zoneLayer);
+        }
       }
-      for (const [idx,p] of rule.points.entries()) {
-        L.marker([p.lat,p.lon],{pane:'stationPane',icon:L.divIcon({className:'point-label',html:`<span>${idx+1}</span>`,iconSize:[25,25],iconAnchor:[12,12]})}).addTo(anchorLayer);
+      if (draft) {
+        for (const [idx,p] of points.entries()) {
+          L.marker([p.lat,p.lon],{pane:'stationPane',icon:L.divIcon({className:'point-label',html:`<span>${idx+1}</span>`,iconSize:[25,25],iconAnchor:[12,12]})}).addTo(anchorLayer);
+        }
       }
     } else if (rule.type==='area') {
       if (rule.effect === 'include') {
