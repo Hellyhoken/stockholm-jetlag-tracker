@@ -79,6 +79,10 @@
   .soft-note { background:#f6f8fb; color:#66768a; border:1px solid #ebeff5; border-radius:9px; padding:9px 10px; font-size:10px; line-height:1.5; margin-top:9px; }
   .warn-note { background:#fff8ec; color:#8b611e; border:1px solid #f2dfbd; border-radius:9px; padding:9px 10px; font-size:10px; line-height:1.5; margin-top:9px; }
   .rule-actions { display:flex; gap:8px; margin-top:13px; }
+  .split-points { display:flex; flex-direction:column; gap:9px; }
+  .split-point { padding:9px; border:1px solid #e5ebf2; border-radius:10px; background:#f9fbfd; }
+  .split-point-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:7px; color:#526177; font-size:10px; font-weight:750; text-transform:uppercase; letter-spacing:.035em; }
+  .split-point-remove { border:0; background:transparent; color:#a33b42; padding:0; font-size:11px; font-weight:700; }
   .rule-actions .button:first-child { flex:1; }
   .area-results { display:flex; flex-direction:column; gap:6px; margin-top:9px; max-height:150px; overflow:auto; }
   .area-result { text-align:left; padding:8px 9px; border:1px solid #dfe6ef; background:white; border-radius:8px; color:#33445c; font-size:11px; }
@@ -225,18 +229,15 @@
 
         <div id="tool-split" class="tool-pane" hidden>
           <div class="field-grid">
-            <div class="field"><label for="split-keep">Keep the side closest to</label><select id="split-keep"><option value="1">Coordinate 1</option><option value="2">Coordinate 2</option></select></div>
-            <div class="field"><label for="split-label">Rule label (optional)</label><input id="split-label" type="text" maxlength="70" placeholder="e.g. west side"></div>
+            <div class="field"><label for="split-effect">Selected area</label><select id="split-effect"><option value="keep">Keep closest area</option><option value="exclude">Exclude closest area</option></select></div>
+            <div class="field"><label for="split-keep">Selected point</label><select id="split-keep"><option value="1">Point 1</option><option value="2">Point 2</option></select></div>
           </div>
           <div class="field">
-            <label class="coordinate-label" for="split1-lat"><span>Coordinate 1</span><button class="pick-button" data-pick="split1" type="button">Pick on map ↗</button></label>
-            <div class="field-grid"><input id="split1-lat" inputmode="decimal" type="number" step="any" value="59.3300" aria-label="Split coordinate 1 latitude"><input id="split1-lon" inputmode="decimal" type="number" step="any" value="18.0700" aria-label="Split coordinate 1 longitude"></div>
+            <label for="split-label">Rule label (optional)</label><input id="split-label" type="text" maxlength="70" placeholder="e.g. west side">
           </div>
-          <div class="field">
-            <label class="coordinate-label" for="split2-lat"><span>Coordinate 2</span><button class="pick-button" data-pick="split2" type="button">Pick on map ↗</button></label>
-            <div class="field-grid"><input id="split2-lat" inputmode="decimal" type="number" step="any" value="59.4000" aria-label="Split coordinate 2 latitude"><input id="split2-lon" inputmode="decimal" type="number" step="any" value="18.2500" aria-label="Split coordinate 2 longitude"></div>
-          </div>
-          <div class="soft-note">A perpendicular bisector is placed halfway between the points. The selected point's side is retained by this rule; stations on the other side are excluded. Previous exclusions on the retained side still apply.</div>
+          <div id="split-points" class="split-points"></div>
+          <button class="button full" id="add-split-point" type="button" style="margin-top:9px">＋ Add point</button>
+          <div class="soft-note">Choose whether the selected point's nearest-point region is kept or excluded. With two points this boundary is a perpendicular bisector. Previous exclusions still apply.</div>
         </div>
 
         <div id="tool-area" class="tool-pane" hidden>
@@ -370,9 +371,18 @@
   }
   function validateRules(value) {
     if(!Array.isArray(value)) throw new Error('This file does not contain a rules array.');
-    const valid=value.filter(r=>r && ['radius','split','area'].includes(r.type) &&
+    const normalized=value.map(r=>{
+      if (!r || !['radius','split','area'].includes(r.type)) return null;
+      if (r.type === 'split' && !Array.isArray(r.points)) {
+        if (isValidCoord(r.p1) && isValidCoord(r.p2)) return {...r, effect:r.effect || 'keep', points:[r.p1,r.p2]};
+        return null;
+      }
+      if (r.type === 'split' && !r.effect) return {...r,effect:'keep'};
+      return r;
+    });
+    const valid=normalized.filter(r=>r &&
       (r.type==='radius' ? isValidCoord(r.center) && Number.isFinite(r.radiusM) && r.radiusM>0 :
-       r.type==='split' ? isValidCoord(r.p1) && isValidCoord(r.p2) && [1,2].includes(Number(r.keep)) :
+       r.type==='split' ? ['keep','exclude'].includes(r.effect) && Array.isArray(r.points) && r.points.length>=2 && r.points.every(isValidCoord) && Number.isInteger(Number(r.keep)) && Number(r.keep)>=1 && Number(r.keep)<=r.points.length :
        r.type==='area' ? r.geometry && Array.isArray(r.geometry.outers) && r.geometry.outers.length>0 : false));
     if(valid.length!==value.length) throw new Error('One or more rules have invalid data or missing area geometry.');
     return valid;
@@ -612,6 +622,31 @@
   }
 
   function isValidCoord(c) { return !!c && Number.isFinite(c.lat) && Number.isFinite(c.lon) && c.lat >= -90 && c.lat <= 90 && c.lon >= -180 && c.lon <= 180; }
+  function getSplitPoints() {
+    return [...document.querySelectorAll('.split-point')].map((_,index)=>getCoordinate(`split${index+1}`));
+  }
+  function updateSplitKeepOptions() {
+    const select=$('split-keep'), current=Number(select.value), count=document.querySelectorAll('.split-point').length;
+    select.innerHTML='';
+    for(let index=1; index<=count; index++) {
+      const option=document.createElement('option');
+      option.value=String(index); option.textContent=`Point ${index}`; select.appendChild(option);
+    }
+    select.value=String(Math.min(Number.isInteger(current) && current>=1 ? current : 1,count));
+  }
+  function renderSplitPoint(index, values) {
+    const point=document.createElement('div'); point.className='split-point';
+    point.innerHTML=`<div class="split-point-head"><span>Point ${index}</span>${index>2?`<button class="split-point-remove" type="button" data-remove-split="${index}">Remove</button>`:''}</div>`+
+      `<label class="coordinate-label" for="split${index}-lat"><span>Coordinate ${index}</span><button class="pick-button" data-pick="split${index}" type="button">Pick on map ↗</button></label>`+
+      `<div class="field-grid"><input id="split${index}-lat" inputmode="decimal" type="number" step="any" value="${escapeHTML(values.lat)}" aria-label="Split point ${index} latitude"><input id="split${index}-lon" inputmode="decimal" type="number" step="any" value="${escapeHTML(values.lon)}" aria-label="Split point ${index} longitude"></div>`;
+    $('split-points').appendChild(point);
+  }
+  function resetSplitPoints() {
+    $('split-points').innerHTML='';
+    renderSplitPoint(1,{lat:'59.3300',lon:'18.0700'});
+    renderSplitPoint(2,{lat:'59.4000',lon:'18.2500'});
+    updateSplitKeepOptions();
+  }
   function buildDraftRule() {
     if (suppressDraft) return null;
     if (activeTool === 'radius') {
@@ -621,9 +656,9 @@
       return {type:'radius', effect:$('radius-effect').value, target:$('radius-target').value, center, radiusM:km*1000, label:$('radius-label').value.trim() || '', draft:true};
     }
     if (activeTool === 'split') {
-      const p1 = getCoordinate('split1'), p2 = getCoordinate('split2');
-      if (!isValidCoord(p1) || !isValidCoord(p2) || distanceMeters(p1,p2) < 5) return null;
-      return {type:'split', keep:Number($('split-keep').value), p1, p2, label:$('split-label').value.trim() || '', draft:true};
+      const points = getSplitPoints();
+      if (points.length < 2 || points.some(point=>!isValidCoord(point)) || points.some((point,index)=>points.slice(index+1).some(other=>distanceMeters(point,other)<5))) return null;
+      return {type:'split', effect:$('split-effect').value, keep:Number($('split-keep').value), points, label:$('split-label').value.trim() || '', draft:true};
     }
     if (activeTool === 'area' && selectedBoundary) {
       return {type:'area', effect:$('area-effect').value, label:selectedBoundary.name, geometry:clone(selectedBoundary.geometry), boundaryType:selectedBoundary.boundaryType, osmType:selectedBoundary.osmType, osmId:selectedBoundary.osmId, draft:true};
@@ -635,9 +670,12 @@
     return map.options.crs.project(L.latLng(latlon.lat, latlon.lon));
   }
   function splitValueAtPoint(point, rule) {
-    const A = getProjected(rule.p1), B = getProjected(rule.p2), P = getProjected(point);
-    const c = B.x*B.x + B.y*B.y - A.x*A.x - A.y*A.y;
-    return 2*P.x*(B.x-A.x) + 2*P.y*(B.y-A.y) - c;
+    const P = getProjected(point);
+    return rule.points.reduce((closest,index,current) => {
+      const candidate=getProjected(current);
+      const candidateDistance=(P.x-candidate.x)**2+(P.y-candidate.y)**2;
+      return candidateDistance<closest.distance ? {index:index+1,distance:candidateDistance} : closest;
+    },{index:1,distance:Infinity}).index;
   }
   function insideRing(point, ring) {
     const x = point.lon, y = point.lat;
@@ -662,9 +700,8 @@
     }
     if (rule.type === 'area') return insideArea(point, rule.geometry);
     if (rule.type === 'split') {
-      const signed = splitValueAtPoint(point, rule);
-      // signed < 0 is closer to coordinate 1. Only the opposite half is excluded.
-      return rule.keep === 1 ? signed >= 0 : signed <= 0;
+      const closest=splitValueAtPoint(point, rule) === rule.keep;
+      return rule.effect === 'exclude' ? closest : !closest;
     }
     return false;
   }
@@ -895,7 +932,7 @@
     points.push(points[0]); return points;
   }
   function clipPolygonHalfPlane(polygon, rule, keepNegative) {
-    const A=getProjected(rule.p1), B=getProjected(rule.p2);
+    const A=getProjected(rule.points[rule.keep-1]), B=getProjected(rule.points[rule._otherPoint]);
     const C=B.x*B.x+B.y*B.y-A.x*A.x-A.y*A.y;
     const projected=polygon.map(ll=>{const p=getProjected({lat:ll[0],lon:ll[1]});return {x:p.x,y:p.y};});
     const value=(p)=>2*p.x*(B.x-A.x)+2*p.y*(B.y-A.y)-C;
@@ -916,6 +953,15 @@
     }
     if(out.length>2) out.push(out[0]);
     return out;
+  }
+  function nearestPointRegion(polygon, rule) {
+    let region=polygon;
+    for (let index=0; index<rule.points.length; index++) {
+      if (index === rule.keep-1) continue;
+      region=clipPolygonHalfPlane(region,{...rule,_otherPoint:index},true);
+      if (region.length<4) break;
+    }
+    return region;
   }
   function geometryToLatLngs(geometry) {
     const polys=(geometry.outers||[]).map(outer=>[outer]);
@@ -944,18 +990,24 @@
       L.circleMarker([rule.center.lat,rule.center.lon],{radius:draft?6:4,color:'#fff',weight:2,fillColor:draft?'#69788e':(rule.effect==='include'?'#13866e':'#d84e54'),fillOpacity:1,pane:'stationPane'}).addTo(anchorLayer);
     } else if (rule.type==='split') {
       const outer=viewportRing(.12);
-      const excludeSide = clipPolygonHalfPlane(outer,rule,rule.keep===2);
-      if(excludeSide.length>=4) L.polygon(excludeSide,{...style,pane:'zonePane'}).addTo(zoneLayer);
-      // Draw the perpendicular bisector using zoom-scaled pixels (map.project / map.unproject).
-      const Apx=map.project([rule.p1.lat,rule.p1.lon],map.getZoom()), Bpx=map.project([rule.p2.lat,rule.p2.lon],map.getZoom());
-      const mx=(Apx.x+Bpx.x)/2, my=(Apx.y+Bpx.y)/2;
-      const dx=-(Bpx.y-Apx.y), dy=(Bpx.x-Apx.x), mag=Math.hypot(dx,dy)||1;
-      const scale=Math.max(map.getSize().x,map.getSize().y)*2;
-      const pA=map.unproject(L.point(mx-dx/mag*scale,my-dy/mag*scale),map.getZoom());
-      const pB=map.unproject(L.point(mx+dx/mag*scale,my+dy/mag*scale),map.getZoom());
-      L.polyline([pA,pB],{color:draft?'#66778e':'#d84e54',weight:draft?2.5:2,dashArray:'7 6',opacity:.9,pane:'zonePane'}).addTo(zoneLayer);
-      for (const [idx,p] of [[1,rule.p1],[2,rule.p2]]) {
-        L.marker([p.lat,p.lon],{pane:'stationPane',icon:L.divIcon({className:'point-label',html:`<span>${idx}</span>`,iconSize:[25,25],iconAnchor:[12,12]})}).addTo(anchorLayer);
+      const retainedRegion=nearestPointRegion(outer,rule);
+      if(retainedRegion.length>=4) {
+        const shaded=rule.effect==='exclude' ? [retainedRegion] : [outer,retainedRegion];
+        L.polygon(shaded,{...style,fillRule:'evenodd',pane:'zonePane'}).addTo(zoneLayer);
+      }
+      for (let otherIndex=0; otherIndex<rule.points.length; otherIndex++) {
+        if (otherIndex===rule.keep-1) continue;
+        const Apx=map.project([rule.points[rule.keep-1].lat,rule.points[rule.keep-1].lon],map.getZoom());
+        const Bpx=map.project([rule.points[otherIndex].lat,rule.points[otherIndex].lon],map.getZoom());
+        const mx=(Apx.x+Bpx.x)/2, my=(Apx.y+Bpx.y)/2;
+        const dx=-(Bpx.y-Apx.y), dy=(Bpx.x-Apx.x), mag=Math.hypot(dx,dy)||1;
+        const scale=Math.max(map.getSize().x,map.getSize().y)*2;
+        const pA=map.unproject(L.point(mx-dx/mag*scale,my-dy/mag*scale),map.getZoom());
+        const pB=map.unproject(L.point(mx+dx/mag*scale,my+dy/mag*scale),map.getZoom());
+        L.polyline([pA,pB],{color:draft?'#66778e':'#d84e54',weight:draft?2.5:2,dashArray:'7 6',opacity:.9,pane:'zonePane'}).addTo(zoneLayer);
+      }
+      for (const [idx,p] of rule.points.entries()) {
+        L.marker([p.lat,p.lon],{pane:'stationPane',icon:L.divIcon({className:'point-label',html:`<span>${idx+1}</span>`,iconSize:[25,25],iconAnchor:[12,12]})}).addTo(anchorLayer);
       }
     } else if (rule.type==='area') {
       if (rule.effect === 'include') {
@@ -1028,7 +1080,7 @@
       const target=rule.target==='inside'?'inside':'outside';
       return `${act} ${target} ${formatKm(rule.radiusM)} of ${rule.center.lat.toFixed(4)}, ${rule.center.lon.toFixed(4)}`;
     }
-    if(rule.type==='split') return `Keep side closest to point ${rule.keep}; exclude the opposite side`;
+    if(rule.type==='split') return `${rule.effect==='exclude'?'Exclude':'Keep'} area closest to point ${rule.keep} of ${rule.points.length}`;
     if(rule.type==='area') return `${rule.effect==='include'?'Include':'Exclude'} mapped area: ${rule.label}`;
     return 'Zone rule';
   }
@@ -1137,7 +1189,7 @@
   function resetDraft() {
     stopPicking(); selectedBoundary=null; suppressDraft=false;
     $('radius-effect').value='exclude'; $('radius-target').value='inside'; $('radius-lat').value='59.3300'; $('radius-lon').value='18.0700'; $('radius-km').value='3'; $('radius-label').value='';
-    $('split-keep').value='1'; $('split1-lat').value='59.3300'; $('split1-lon').value='18.0700'; $('split2-lat').value='59.4000'; $('split2-lon').value='18.2500'; $('split-label').value='';
+    $('split-effect').value='keep'; $('split-keep').value='1'; resetSplitPoints(); $('split-label').value='';
     $('area-effect').value='exclude'; $('area-name').value=''; $('area-results').innerHTML=''; $('area-status').textContent='Search an exact county/area name or postcode.'; $('area-selection-note').textContent='Select a result to preview its boundary, then add the rule.';
     renderAll();
   }
@@ -1187,7 +1239,23 @@
   });
 
   document.querySelectorAll('[data-tool]').forEach(btn=>btn.addEventListener('click',()=>setTool(btn.dataset.tool)));
-  document.querySelectorAll('[data-pick]').forEach(btn=>btn.addEventListener('click',()=>startPicking(btn.dataset.pick)));
+  document.addEventListener('click',ev=>{
+    const pick=ev.target.closest('[data-pick]');
+    if (pick) { startPicking(pick.dataset.pick); return; }
+    const remove=ev.target.closest('[data-remove-split]');
+    if (!remove) return;
+    const values=[...document.querySelectorAll('.split-point')].map((_,index)=>({
+      lat:$(`split${index+1}-lat`).value, lon:$(`split${index+1}-lon`).value
+    })).filter((_,index)=>index+1!==Number(remove.dataset.removeSplit));
+    $('split-points').innerHTML='';
+    values.forEach((point,index)=>renderSplitPoint(index+1,point));
+    updateSplitKeepOptions(); suppressDraft=false; renderAll();
+  });
+  $('add-split-point').addEventListener('click',()=>{
+    const count=document.querySelectorAll('.split-point').length;
+    renderSplitPoint(count+1,{lat:'59.3300',lon:'18.0700'});
+    updateSplitKeepOptions(); suppressDraft=false; renderAll();
+  });
   $('cancel-pick').addEventListener('click',stopPicking);
   $('toggle-station-edit').addEventListener('click',()=>setStationEditMode(!stationEditMode));
   $('reload-stations').addEventListener('click',()=>loadStations(true, true));
@@ -1250,10 +1318,12 @@
     resizing=false; sidebarHandle.releasePointerCapture(ev.pointerId); $('sidebar').classList.remove('dragging');
   });
   ['show-metro','show-rail','show-tram'].forEach(id=>$(id).addEventListener('change',renderAll));
-  const draftFieldIds=['radius-effect','radius-target','radius-lat','radius-lon','radius-km','radius-label','split-keep','split1-lat','split1-lon','split2-lat','split2-lon','split-label','area-effect'];
+  const draftFieldIds=['radius-effect','radius-target','radius-lat','radius-lon','radius-km','radius-label','split-effect','split-keep','split-label','area-effect'];
   const handleDraftInput = () => { suppressDraft=false; renderAll(); };
   draftFieldIds.forEach(id=>$(id).addEventListener('input',handleDraftInput));
   draftFieldIds.forEach(id=>$(id).addEventListener('change',handleDraftInput));
+  $('split-points').addEventListener('input',handleDraftInput);
+  $('split-points').addEventListener('change',handleDraftInput);
 
   function exportRules() {
     const data={
@@ -1294,7 +1364,7 @@
 
   map.on('moveend zoomend',()=>renderAll());
   window.addEventListener('resize',()=>{map.invalidateSize({pan:false}); renderAll();});
-  loadZoneRules(); loadManualExclusions(); renderRulesList(); renderAll();
+  resetSplitPoints(); loadZoneRules(); loadManualExclusions(); renderRulesList(); renderAll();
   // Load data immediately; the map remains usable even if Overpass is temporarily unavailable.
   loadStations(true);
 })();
