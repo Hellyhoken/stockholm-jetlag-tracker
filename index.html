@@ -82,7 +82,6 @@
   .rule-actions { display:flex; gap:8px; margin-top:13px; }
   .split-points { display:flex; flex-direction:column; gap:9px; }
   .split-point { padding:9px; border:1px solid #e5ebf2; border-radius:10px; background:#f9fbfd; }
-  .split-point-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:7px; color:#526177; font-size:10px; font-weight:750; text-transform:uppercase; letter-spacing:.035em; }
   .split-point-remove { border:0; background:transparent; color:#a33b42; padding:0; font-size:11px; font-weight:700; }
   .rule-actions .button:first-child { flex:1; }
   .area-results { display:flex; flex-direction:column; gap:6px; margin-top:9px; max-height:150px; overflow:auto; }
@@ -245,8 +244,8 @@
             <label for="split-label">Rule label (optional)</label><input id="split-label" type="text" maxlength="70" placeholder="e.g. west side">
           </div>
           <div id="split-points" class="split-points"></div>
-          <button class="button full" id="add-split-point" type="button" style="margin-top:9px">＋ Add point</button>
-          <div class="soft-note">Choose whether the selected point's nearest-point region is kept or excluded. With two points this boundary is a perpendicular bisector. Previous exclusions still apply.</div>
+          <button class="button full" id="add-split-point" type="button" style="margin-top:9px">+ Add point</button>
+          <div class="soft-note">Choose whether the selected point's nearest-point region is kept or excluded.</div>
         </div>
 
         <div id="tool-area" class="tool-pane" hidden>
@@ -260,7 +259,7 @@
           <div class="warn-note">A postcode is usable only if OSM has a polygon boundary for it. A postcode label or address point is not treated as a whole area.</div>
           <div class="soft-note" id="area-selection-note">Select a result to preview its boundary, then add the rule.</div>
         </div>
-        <div class="rule-actions"><button class="button primary" id="add-rule" type="button">＋ Add zone rule</button><button class="button" id="cancel-draft" type="button">Reset draft</button></div>
+        <div class="rule-actions"><button class="button primary" id="add-rule" type="button">+ Add zone rule</button><button class="button" id="cancel-draft" type="button">Reset draft</button></div>
         <button class="button full" id="toggle-station-edit" type="button" aria-pressed="false" style="margin-top:12px">✎ Change stations</button>
       </div>
     </section>
@@ -699,9 +698,8 @@
   }
   function renderSplitPoint(index, values) {
     const point=document.createElement('div'); point.className='split-point';
-    point.innerHTML=`<div class="split-point-head"><span>Point ${index}</span>${index>2?`<button class="split-point-remove" type="button" data-remove-split="${index}">Remove</button>`:''}</div>`+
-      `<div class="coordinate-label"><span>Coordinate ${index}</span><span class="coordinate-actions"><button class="pick-button" data-pick="split${index}" type="button">Pick on map ↗</button><button class="pick-button" data-location="split${index}" type="button">Use current location</button></span></div>`+
-      `<div class="field-grid"><input id="split${index}-lat" inputmode="decimal" type="number" step="any" value="${escapeHTML(values.lat)}" aria-label="Split point ${index} latitude"><input id="split${index}-lon" inputmode="decimal" type="number" step="any" value="${escapeHTML(values.lon)}" aria-label="Split point ${index} longitude"></div>`;
+    point.innerHTML=`<div class="field"><div class="coordinate-label"><span>Point ${index}</span><span class="coordinate-actions"><button class="pick-button" data-pick="split${index}" type="button">Pick on map ↗</button><button class="pick-button" data-location="split${index}" type="button">Use current location</button>${index>2?`<button class="split-point-remove" type="button" data-remove-split="${index}">Remove</button>`:''}</span></div>`+
+      `<div class="field-grid"><input id="split${index}-lat" inputmode="decimal" type="number" step="any" value="${escapeHTML(values.lat)}" aria-label="Split point ${index} latitude"><input id="split${index}-lon" inputmode="decimal" type="number" step="any" value="${escapeHTML(values.lon)}" aria-label="Split point ${index} longitude"></div></div>`;
     $('split-points').appendChild(point);
   }
   function resetSplitPoints() {
@@ -1255,7 +1253,7 @@
   function updateAddButton() {
     const okay=!!buildDraftRule();
     $('add-rule').disabled=!okay;
-    $('add-rule').textContent=okay?'＋ Add zone rule':'Set valid coordinates to preview';
+    $('add-rule').textContent=okay?'+ Add zone rule':'Set valid coordinates to preview';
   }
   function addCurrentRule() {
     const rule=buildDraftRule();
