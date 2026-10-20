@@ -71,7 +71,8 @@
   .field input:focus,.field select:focus { border-color:#79a6ec; box-shadow:0 0 0 3px rgba(40,112,213,.11); }
   .field-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
   .field-grid.three { grid-template-columns:minmax(0,1fr) 96px minmax(0,1fr); }
-  .coordinate-label { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .coordinate-label { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:0 0 5px; color:#526177; font-size:10px; font-weight:750; letter-spacing:.035em; text-transform:uppercase; }
+  .coordinate-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
   .pick-button { border:0; background:transparent; color:#276acb; padding:0; font-size:10px; text-transform:none; font-weight:750; letter-spacing:0; }
   .pick-button:hover { text-decoration:underline; }
   .pick-banner { display:none; padding:9px 10px; background:var(--amber-soft); border:1px solid #f2d9ac; color:#87570d; border-radius:9px; font-size:11px; line-height:1.4; margin-bottom:10px; }
@@ -120,6 +121,10 @@
   .map-notice { position:absolute; z-index:500; bottom:75px; right:12px; max-width:270px; display:none; padding:10px 12px; border-radius:10px; font-size:11px; line-height:1.4; box-shadow:0 3px 12px rgba(19,33,55,.13); border:1px solid #f0d7ac; background:#fff8ec; color:#845813; }
   .map-notice.visible { display:block; }
   .leaflet-popup-content { margin:11px 13px; min-width:160px; }
+  .leaflet-control-location button { width:36px; height:36px; display:grid; place-items:center; border:0; background:#fff; color:#34465e; cursor:pointer; }
+  .leaflet-control-location button:hover { background:#f4f7fb; }
+  .leaflet-control-location button:focus-visible { outline:2px solid #2870d5; outline-offset:2px; }
+  .leaflet-control-location svg { width:20px; height:20px; fill:currentColor; transform:rotate(45deg); }
   .popup-name { font-weight:800; font-size:13px; color:#23364e; }
   .popup-modes { margin-top:5px; color:#65758b; font-size:11px; }
   .popup-status { margin-top:8px; font-size:11px; font-weight:750; }
@@ -217,7 +222,7 @@
             <div class="field"><label for="radius-target">Applies to</label><select id="radius-target"><option value="inside">Inside radius</option><option value="outside">Outside radius</option></select></div>
           </div>
           <div class="field">
-            <label class="coordinate-label" for="radius-lat"><span>Centre coordinate</span><button class="pick-button" data-pick="radius" type="button">Pick on map ↗</button></label>
+            <div class="coordinate-label"><span>Centre coordinate</span><span class="coordinate-actions"><button class="pick-button" data-pick="radius" type="button">Pick on map ↗</button><button class="pick-button" data-location="radius" type="button">Use current location</button></span></div>
             <div class="field-grid"><input id="radius-lat" inputmode="decimal" type="number" step="any" value="59.3300" aria-label="Radius centre latitude"><input id="radius-lon" inputmode="decimal" type="number" step="any" value="18.0700" aria-label="Radius centre longitude"></div>
           </div>
           <div class="field-grid">
@@ -323,11 +328,27 @@
   L.control.layers(null, {'OpenRailwayMap rail lines': railwayLayer}, {
     collapsed: true, position: 'bottomright'
   }).addTo(map);
+  const locationControl = L.control({position:'topleft'});
+  locationControl.onAdd = () => {
+    const container = L.DomUtil.create('div', 'leaflet-control leaflet-bar leaflet-control-location');
+    const button = L.DomUtil.create('button', '', container);
+    button.type = 'button';
+    button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 3 22l9-4 9 4-9-20z"></path></svg>';
+    button.title = 'Show my current position';
+    button.setAttribute('aria-label', 'Show my current position');
+    L.DomEvent.disableClickPropagation(container);
+    L.DomEvent.disableScrollPropagation(container);
+    L.DomEvent.on(button, 'click', () => locateCurrentPosition());
+    return container;
+  };
+  locationControl.addTo(map);
   map.createPane('zonePane'); map.getPane('zonePane').style.zIndex = 350;
   map.createPane('stationPane'); map.getPane('stationPane').style.zIndex = 480;
+  map.createPane('locationPane'); map.getPane('locationPane').style.zIndex = 650;
   const zoneLayer = L.layerGroup().addTo(map);
   const stationLayer = L.layerGroup().addTo(map);
   const anchorLayer = L.layerGroup().addTo(map);
+  const locationLayer = L.layerGroup().addTo(map);
 
   let stations = [];
   let rules = [];
@@ -365,6 +386,44 @@
     node.classList.add('visible');
     if (noticeTimer) clearTimeout(noticeTimer);
     if (duration > 0) noticeTimer = setTimeout(() => node.classList.remove('visible'), duration);
+  }
+  function locateCurrentPosition(targetPrefix=null) {
+    if (!navigator.geolocation) {
+      setNotice('Your browser does not support location services.');
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(position => {
+      const {latitude, longitude, accuracy} = position.coords;
+      const currentPosition = L.latLng(latitude, longitude);
+      if (targetPrefix) {
+        if (placingTarget) stopPicking();
+        $(`${targetPrefix}-lat`).value = latitude.toFixed(6);
+        $(`${targetPrefix}-lon`).value = longitude.toFixed(6);
+        suppressDraft = false;
+        renderAll();
+      }
+      locationLayer.clearLayers();
+      L.circle(currentPosition, {
+        pane:'locationPane', radius:accuracy, color:'#8b68d8', weight:1, fillColor:'#8b68d8', fillOpacity:0.12
+      }).addTo(locationLayer);
+      L.circleMarker(currentPosition, {
+        pane:'locationPane', radius:8, color:'#fff', weight:3, fillColor:'#8b68d8', fillOpacity:1
+      }).bindPopup('Your current position').addTo(locationLayer);
+      map.setView(currentPosition, Math.max(map.getZoom(), 15));
+      const message = targetPrefix === 'radius'
+        ? 'Current position set as the radius centre.'
+        : targetPrefix
+          ? `Current position set as split point ${targetPrefix.slice('split'.length)}.`
+          : 'Showing your current position.';
+      setNotice(message, 'ok', 3000);
+    }, error => {
+      const message = error.code === error.PERMISSION_DENIED
+        ? 'Location access was denied. Allow location access in your browser to show your position.'
+        : error.code === error.TIMEOUT
+          ? 'Could not get your location in time. Please try again.'
+          : 'Your current location is unavailable. Please try again.';
+      setNotice(message);
+    }, {enableHighAccuracy:true, timeout:15000, maximumAge:10000});
   }
   function stationIsManuallyExcluded(station) {
     return station.osmIds.some(id => manualExclusions.has(id));
@@ -637,7 +696,7 @@
   function renderSplitPoint(index, values) {
     const point=document.createElement('div'); point.className='split-point';
     point.innerHTML=`<div class="split-point-head"><span>Point ${index}</span>${index>2?`<button class="split-point-remove" type="button" data-remove-split="${index}">Remove</button>`:''}</div>`+
-      `<label class="coordinate-label" for="split${index}-lat"><span>Coordinate ${index}</span><button class="pick-button" data-pick="split${index}" type="button">Pick on map ↗</button></label>`+
+      `<div class="coordinate-label"><span>Coordinate ${index}</span><span class="coordinate-actions"><button class="pick-button" data-pick="split${index}" type="button">Pick on map ↗</button><button class="pick-button" data-location="split${index}" type="button">Use current location</button></span></div>`+
       `<div class="field-grid"><input id="split${index}-lat" inputmode="decimal" type="number" step="any" value="${escapeHTML(values.lat)}" aria-label="Split point ${index} latitude"><input id="split${index}-lon" inputmode="decimal" type="number" step="any" value="${escapeHTML(values.lon)}" aria-label="Split point ${index} longitude"></div>`;
     $('split-points').appendChild(point);
   }
@@ -1267,6 +1326,8 @@
   document.addEventListener('click',ev=>{
     const pick=ev.target.closest('[data-pick]');
     if (pick) { startPicking(pick.dataset.pick); return; }
+    const location=ev.target.closest('[data-location]');
+    if (location) { locateCurrentPosition(location.dataset.location); return; }
     const remove=ev.target.closest('[data-remove-split]');
     if (!remove) return;
     const values=[...document.querySelectorAll('.split-point')].map((_,index)=>({
